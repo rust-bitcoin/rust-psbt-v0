@@ -1,0 +1,38 @@
+[package]
+name = "psbt-v0"
+version = "0.1.0"
+authors = ["Andrew Poelstra <apoelstra@wpsoftware.net>", "Tobin C. Harding <me@tobin.cc>"]
+license = "CC0-1.0"
+repository = "https://github.com/tcharding/rust-psbt-v0/"
+description = "Partially Signed Bitcoin Transaction Format - BIP-174"
+categories = ["cryptography::cryptocurrencies"]
+keywords = [ "psbt", "bip-174", "bip174", "psbt-v0", "psbtv0"]
+readme = "README.md"
+edition = "2021"
+rust-version = "1.63.0"
+exclude = ["tests", "contrib"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["std"]
+std = ["bitcoin/std", "bitcoin-internals/std"]
+rand-std = ["bitcoin/rand-std", "std"]
+rand = ["bitcoin/rand"]
+serde = ["actual-serde", "bitcoin/serde", "bitcoin-internals/serde"]
+
+[dependencies]
+bitcoin = { version = "0.32.2", default-features = false }
+bitcoin-internals = { version = "0.3.0", features = ["alloc"] }
+
+base64 = { version = "0.21.3", optional = true }
+
+# Do NOT use this as a feature! Use the `serde` feature instead.
+actual-serde = { package = "serde", version = "1.0.103", default-features = false, features = [ "derive", "alloc" ], optional = true }
+
+[dev-dependencies]
+bincode = "1.3.1"
+serde_json = "1.0.0"
+serde_test = "1.0.19"
