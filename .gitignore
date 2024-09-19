@@ -1,0 +1,7 @@
+# .gitignore for rust-psbt-v0 repository.
+
+# Lock files
+Cargo.lock
+
+# Build artifacts
+target
