@@ -30,9 +30,8 @@ bitcoin = { version = "0.32.2", default-features = false }
 bitcoin-internals = { version = "0.3.0", features = ["alloc"] }
 
 base64 = { version = "0.21.3", optional = true }
-
-# Do NOT use this feature! Use one of the `miniscript-` features instead.
 miniscript = { version = "12.2.0", default-features = false, optional = true }
+
 # Do NOT use this as a feature! Use the `serde` feature instead.
 actual-serde = { package = "serde", version = "1.0.103", default-features = false, features = [ "derive", "alloc" ], optional = true }
 
@@ -46,3 +45,6 @@ secp256k1 = { version = "0.29", features = ["rand-std", "global-context"] }
 [[example]]
 name = "multisig"
 required-features = ["rand-std"]
+
+[patch.crates-io.miniscript]
+path = "/home/tobin/build/github.com/tcharding/rust-miniscript/master"

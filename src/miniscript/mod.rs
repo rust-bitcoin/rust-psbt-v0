@@ -34,6 +34,8 @@ use crate::prelude::*;
 mod finalizer;
 mod util;
 
+pub mod plan;
+
 #[allow(deprecated)]
 pub use self::finalizer::{finalize, finalize_mall, interpreter_check};
 
