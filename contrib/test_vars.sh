@@ -11,4 +11,4 @@ FEATURES_WITH_STD="rand-std serde base64"
 FEATURES_WITHOUT_STD="rand serde base64"
 
 # Run these examples.
-EXAMPLES=""
+EXAMPLES="multisig:rand-std"
