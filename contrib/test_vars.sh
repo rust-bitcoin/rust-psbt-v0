@@ -5,10 +5,10 @@
 # shellcheck disable=SC2034
 
 # Test all these features with "std" enabled.
-FEATURES_WITH_STD="rand-std serde base64"
+FEATURES_WITH_STD="rand-std serde base64 miniscript-std"
 
 # Test all these features without "std" enabled.
-FEATURES_WITHOUT_STD="rand serde base64"
+FEATURES_WITHOUT_STD="rand serde base64 miniscript-no-std"
 
 # Run these examples.
 EXAMPLES="multisig:rand-std"
