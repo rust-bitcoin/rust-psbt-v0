@@ -29,9 +29,6 @@ mod map;
 #[cfg(feature = "serde")]
 mod serde_utils;
 
-#[cfg(feature = "miniscript")]
-#[rustfmt::skip] // Just for release 0.1.0
-pub mod miniscript;
 pub mod raw;
 pub mod serialize;
 
