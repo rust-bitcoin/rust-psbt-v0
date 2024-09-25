@@ -36,7 +36,7 @@ use core::{cmp, fmt};
 #[cfg(feature = "std")]
 use std::collections::{HashMap, HashSet};
 
-use bitcoin::bip32::{self, KeySource, Xpriv, Xpub};
+use bitcoin::bip32::{self, DerivationPath, KeySource, Xpriv, Xpub};
 use bitcoin::blockdata::transaction::{self, Transaction, TxOut};
 use bitcoin::key::{PrivateKey, PublicKey, TapTweak, XOnlyPublicKey};
 use bitcoin::secp256k1::{Keypair, Message, Secp256k1, Signing, Verification};
@@ -778,6 +778,13 @@ impl GetKey for Xpriv {
             KeyRequest::Pubkey(_) => Err(GetKeyError::NotSupported),
             KeyRequest::Bip32((fingerprint, path)) => {
                 let key = if self.fingerprint(secp) == *fingerprint {
+                    let k = self.derive_priv(secp, &path)?;
+                    Some(k.to_priv())
+                } else if self.parent_fingerprint == *fingerprint
+                    && !path.is_empty()
+                    && path[0] == self.child_number
+                {
+                    let path = DerivationPath::from_iter(path.into_iter().skip(1).copied());
                     let k = self.derive_priv(secp, &path)?;
                     Some(k.to_priv())
                 } else {
