@@ -19,16 +19,17 @@ use crate::prelude::*;
 use crate::Error;
 
 /// A PSBT key in its raw byte form.
+///
+/// `<key> := <keylen> <keytype> <keydata>`
 #[derive(Debug, PartialEq, Hash, Eq, Clone, Ord, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(crate = "actual_serde"))]
 pub struct Key {
     /// The type of this PSBT key.
     pub type_value: u8,
-    /// The key itself in raw byte form.
-    /// `<key> := <keylen> <keytype> <keydata>`
+    /// The key data itself in raw byte form.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::hex_bytes"))]
-    pub key: Vec<u8>,
+    pub key_data: Vec<u8>,
 }
 
 /// A PSBT key-value pair in its raw byte form.
@@ -70,7 +71,7 @@ where
 
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "type: {:#x}, key: {:x}", self.type_value, self.key.as_hex())
+        write!(f, "type: {:#x}, key: {:x}", self.type_value, self.key_data.as_hex())
     }
 }
 
@@ -94,25 +95,25 @@ impl Key {
 
         let type_value: u8 = Decodable::consensus_decode(r)?;
 
-        let mut key = Vec::with_capacity(key_byte_size as usize);
+        let mut key_data = Vec::with_capacity(key_byte_size as usize);
         for _ in 0..key_byte_size {
-            key.push(Decodable::consensus_decode(r)?);
+            key_data.push(Decodable::consensus_decode(r)?);
         }
 
-        Ok(Key { type_value, key })
+        Ok(Key { type_value, key_data })
     }
 }
 
 impl Serialize for Key {
     fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
-        VarInt::from(self.key.len() + 1)
+        VarInt::from(self.key_data.len() + 1)
             .consensus_encode(&mut buf)
             .expect("in-memory writers don't error");
 
         self.type_value.consensus_encode(&mut buf).expect("in-memory writers don't error");
 
-        for key in &self.key {
+        for key in &self.key_data {
             key.consensus_encode(&mut buf).expect("in-memory writers don't error");
         }
 
@@ -178,7 +179,7 @@ where
     Subtype: Copy + From<u8> + Into<u8>,
 {
     /// Constructs full [Key] corresponding to this proprietary key type
-    pub fn to_key(&self) -> Key { Key { type_value: 0xFC, key: serialize(self) } }
+    pub fn to_key(&self) -> Key { Key { type_value: 0xFC, key_data: serialize(self) } }
 }
 
 impl<Subtype> TryFrom<Key> for ProprietaryKey<Subtype>
@@ -196,6 +197,6 @@ where
             return Err(Error::InvalidProprietaryKey);
         }
 
-        Ok(deserialize(&key.key)?)
+        Ok(deserialize(&key.key_data)?)
     }
 }

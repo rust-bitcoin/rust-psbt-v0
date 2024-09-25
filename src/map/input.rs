@@ -522,10 +522,10 @@ fn psbt_insert_hash_pair<H>(
 where
     H: bitcoin::hashes::Hash + Deserialize,
 {
-    if raw_key.key.is_empty() {
+    if raw_key.key_data.is_empty() {
         return Err(Error::InvalidKey(raw_key));
     }
-    let key_val: H = Deserialize::deserialize(&raw_key.key)?;
+    let key_val: H = Deserialize::deserialize(&raw_key.key_data)?;
     match map.entry(key_val) {
         btree_map::Entry::Vacant(empty_key) => {
             let val: Vec<u8> = Deserialize::deserialize(&raw_value)?;
