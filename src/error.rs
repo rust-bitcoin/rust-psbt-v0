@@ -135,7 +135,7 @@ impl fmt::Display for Error {
             InvalidHash(ref e) => write_err!(f, "invalid hash when parsing slice"; e),
             InvalidPreimageHashPair { ref preimage, ref hash, ref hash_type } => {
                 // directly using debug forms of psbthash enums
-                write!(f, "Preimage {:?} does not match {:?} hash {:?}", preimage, hash_type, hash)
+                write!(f, "preimage {:?} does not match {:?} hash {:?}", preimage, hash_type, hash)
             }
             CombineInconsistentKeySources(ref s) => {
                 write!(f, "combine conflict: {}", s)
@@ -150,8 +150,8 @@ impl fmt::Display for Error {
             InvalidTaprootSignature(ref e) => write_err!(f, "invalid Taproot signature"; e),
             InvalidControlBlock => f.write_str("invalid control block"),
             InvalidLeafVersion => f.write_str("invalid leaf version"),
-            Taproot(s) => write!(f, "taproot error -  {}", s),
-            TapTree(ref e) => write_err!(f, "taproot tree error"; e),
+            Taproot(s) => write!(f, "Taproot error -  {}", s),
+            TapTree(ref e) => write_err!(f, "Taproot tree error"; e),
             XPubKey(s) => write!(f, "xpub key error -  {}", s),
             Version(s) => write!(f, "version error {}", s),
             PartialDataConsumption =>

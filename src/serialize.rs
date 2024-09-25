@@ -173,7 +173,7 @@ impl Deserialize for ecdsa::Signature {
             ecdsa::Error::EmptySignature => Error::InvalidEcdsaSignature(e),
             ecdsa::Error::SighashType(err) => Error::NonStandardSighashType(err.0),
             ecdsa::Error::Secp256k1(..) => Error::InvalidEcdsaSignature(e),
-            ecdsa::Error::Hex(..) => unreachable!("Decoding from slice, not hex"),
+            ecdsa::Error::Hex(..) => unreachable!("decoding from slice, not hex"),
             _ => todo!("handle this properly"),
         })
     }
@@ -319,7 +319,7 @@ impl Deserialize for (ScriptBuf, LeafVersion) {
 impl Serialize for (Vec<TapLeafHash>, KeySource) {
     fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(32 * self.0.len() + key_source_len(&self.1));
-        self.0.consensus_encode(&mut buf).expect("Vecs don't error allocation");
+        self.0.consensus_encode(&mut buf).expect("vecs don't error allocation");
         buf.extend(self.1.serialize());
         buf
     }
@@ -351,7 +351,7 @@ impl Serialize for TapTree {
             // safe to cast from usize to u8
             buf.push(leaf_info.merkle_branch().len() as u8);
             buf.push(leaf_info.version().to_consensus());
-            leaf_info.script().consensus_encode(&mut buf).expect("Vecs dont err");
+            leaf_info.script().consensus_encode(&mut buf).expect("vecs dont err");
         }
         buf
     }
@@ -362,7 +362,7 @@ impl Deserialize for TapTree {
         let mut builder = TaprootBuilder::new();
         let mut bytes_iter = bytes.iter();
         while let Some(depth) = bytes_iter.next() {
-            let version = bytes_iter.next().ok_or(Error::Taproot("Invalid Taproot Builder"))?;
+            let version = bytes_iter.next().ok_or(Error::Taproot("invalid Taproot Builder"))?;
             let (script, consumed) = deserialize_partial::<ScriptBuf>(bytes_iter.as_slice())?;
             if consumed > 0 {
                 bytes_iter.nth(consumed - 1);
@@ -371,7 +371,7 @@ impl Deserialize for TapTree {
                 LeafVersion::from_consensus(*version).map_err(|_| Error::InvalidLeafVersion)?;
             builder = builder
                 .add_leaf_with_ver(*depth, script, leaf_version)
-                .map_err(|_| Error::Taproot("Tree not in DFS order"))?;
+                .map_err(|_| Error::Taproot("tree not in DFS order"))?;
         }
         TapTree::try_from(builder).map_err(Error::TapTree)
     }
