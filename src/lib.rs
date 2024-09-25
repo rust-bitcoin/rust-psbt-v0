@@ -11,6 +11,7 @@
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 // Coding conventions
 #![warn(missing_docs)]
+#![doc(test(attr(warn(unused))))]
 
 #[macro_use]
 extern crate alloc;
