@@ -24,7 +24,7 @@ impl Map for Psbt {
         let mut rv: Vec<raw::Pair> = Default::default();
 
         rv.push(raw::Pair {
-            key: raw::Key { type_value: PSBT_GLOBAL_UNSIGNED_TX, key: vec![] },
+            key: raw::Key { type_value: PSBT_GLOBAL_UNSIGNED_TX, key_data: vec![] },
             value: {
                 // Manually serialized to ensure 0-input txs are serialized
                 // without witnesses.
@@ -39,7 +39,7 @@ impl Map for Psbt {
 
         for (xpub, (fingerprint, derivation)) in &self.xpub {
             rv.push(raw::Pair {
-                key: raw::Key { type_value: PSBT_GLOBAL_XPUB, key: xpub.encode().to_vec() },
+                key: raw::Key { type_value: PSBT_GLOBAL_XPUB, key_data: xpub.encode().to_vec() },
                 value: {
                     let mut ret = Vec::with_capacity(4 + derivation.len() * 4);
                     ret.extend(fingerprint.as_bytes());
@@ -52,7 +52,7 @@ impl Map for Psbt {
         // Serializing version only for non-default value; otherwise test vectors fail
         if self.version > 0 {
             rv.push(raw::Pair {
-                key: raw::Key { type_value: PSBT_GLOBAL_VERSION, key: vec![] },
+                key: raw::Key { type_value: PSBT_GLOBAL_VERSION, key_data: vec![] },
                 value: self.version.to_le_bytes().to_vec(),
             });
         }
@@ -84,7 +84,7 @@ impl Psbt {
                     match pair.key.type_value {
                         PSBT_GLOBAL_UNSIGNED_TX => {
                             // key has to be empty
-                            if pair.key.key.is_empty() {
+                            if pair.key.key_data.is_empty() {
                                 // there can only be one unsigned transaction
                                 if tx.is_none() {
                                     let vlen: usize = pair.value.len();
@@ -111,15 +111,15 @@ impl Psbt {
                             }
                         }
                         PSBT_GLOBAL_XPUB => {
-                            if !pair.key.key.is_empty() {
-                                let xpub = Xpub::decode(&pair.key.key)
+                            if !pair.key.key_data.is_empty() {
+                                let xpub = Xpub::decode(&pair.key.key_data)
                                     .map_err(|_| Error::XPubKey(
-                                        "Can't deserialize ExtendedPublicKey from global XPUB key data"
+                                        "can't deserialize ExtendedPublicKey from global XPUB key data"
                                     ))?;
 
                                 if pair.value.is_empty() || pair.value.len() % 4 != 0 {
                                     return Err(Error::XPubKey(
-                                        "Incorrect length of global xpub derivation data",
+                                        "incorrect length of global xpub derivation data",
                                     ));
                                 }
 
@@ -127,7 +127,7 @@ impl Psbt {
                                 let mut decoder = Cursor::new(pair.value);
                                 let mut fingerprint = [0u8; 4];
                                 decoder.read_exact(&mut fingerprint[..]).map_err(|_| {
-                                    Error::XPubKey("Can't read global xpub fingerprint")
+                                    Error::XPubKey("can't read global xpub fingerprint")
                                 })?;
                                 let mut path = Vec::<ChildNumber>::with_capacity(child_count);
                                 while let Ok(index) = u32::consensus_decode(&mut decoder) {
@@ -139,17 +139,17 @@ impl Psbt {
                                     .insert(xpub, (Fingerprint::from(fingerprint), derivation))
                                     .is_some()
                                 {
-                                    return Err(Error::XPubKey("Repeated global xpub key"));
+                                    return Err(Error::XPubKey("repeated global xpub key"));
                                 }
                             } else {
                                 return Err(Error::XPubKey(
-                                    "Xpub global key must contain serialized Xpub data",
+                                    "xpub global key must contain serialized Xpub data",
                                 ));
                             }
                         }
                         PSBT_GLOBAL_VERSION => {
                             // key has to be empty
-                            if pair.key.key.is_empty() {
+                            if pair.key.key_data.is_empty() {
                                 // there can only be one version
                                 if version.is_none() {
                                     let vlen: usize = pair.value.len();

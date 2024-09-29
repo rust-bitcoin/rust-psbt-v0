@@ -10,6 +10,7 @@ use bitcoin::bip32::{ChildNumber, Fingerprint, KeySource};
 use bitcoin::consensus::encode::{self, deserialize_partial, serialize, Decodable, Encodable};
 use bitcoin::hashes::{hash160, ripemd160, sha256, sha256d, Hash};
 use bitcoin::hex::DisplayHex as _;
+use bitcoin::io::Write;
 use bitcoin::secp256k1::{self, XOnlyPublicKey};
 use bitcoin::taproot::{
     ControlBlock, LeafVersion, TapLeafHash, TapNodeHash, TapTree, TaprootBuilder,
@@ -40,40 +41,57 @@ impl Psbt {
     /// Serialize as raw binary data
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf: Vec<u8> = Vec::new();
-
-        //  <magic>
-        buf.extend_from_slice(b"psbt");
-
-        buf.push(0xff_u8);
-
-        buf.extend(self.serialize_map());
-
-        for i in &self.inputs {
-            buf.extend(i.serialize_map());
-        }
-
-        for i in &self.outputs {
-            buf.extend(i.serialize_map());
-        }
-
+        self.serialize_to_writer(&mut buf).expect("Writing to Vec can't fail");
         buf
     }
 
+    /// Serialize the PSBT into a writer.
+    pub fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<usize> {
+        let mut written_len = 0;
+
+        fn write_all(w: &mut impl Write, data: &[u8]) -> io::Result<usize> {
+            w.write_all(data).map(|_| data.len())
+        }
+
+        // magic
+        written_len += write_all(w, b"psbt")?;
+        // separator
+        written_len += write_all(w, &[0xff])?;
+
+        written_len += write_all(w, &self.serialize_map())?;
+
+        for i in &self.inputs {
+            written_len += write_all(w, &i.serialize_map())?;
+        }
+
+        for i in &self.outputs {
+            written_len += write_all(w, &i.serialize_map())?;
+        }
+
+        Ok(written_len)
+    }
+
     /// Deserialize a value from raw binary data.
-    pub fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
+    pub fn deserialize(mut bytes: &[u8]) -> Result<Self, Error> {
+        Self::deserialize_from_reader(&mut bytes)
+    }
+
+    /// Deserialize a value from raw binary data read from a `BufRead` object.
+    pub fn deserialize_from_reader<R: io::BufRead>(r: &mut R) -> Result<Self, Error> {
         const MAGIC_BYTES: &[u8] = b"psbt";
-        if bytes.get(0..MAGIC_BYTES.len()) != Some(MAGIC_BYTES) {
+
+        let magic: [u8; 4] = Decodable::consensus_decode(r)?;
+        if magic != MAGIC_BYTES {
             return Err(Error::InvalidMagic);
         }
 
         const PSBT_SERPARATOR: u8 = 0xff_u8;
-        if bytes.get(MAGIC_BYTES.len()) != Some(&PSBT_SERPARATOR) {
+        let separator: u8 = Decodable::consensus_decode(r)?;
+        if separator != PSBT_SERPARATOR {
             return Err(Error::InvalidSeparator);
         }
 
-        let mut d = bytes.get(5..).ok_or(Error::NoMorePairs)?;
-
-        let mut global = Psbt::decode_global(&mut d)?;
+        let mut global = Psbt::decode_global(r)?;
         global.unsigned_tx_checks()?;
 
         let inputs: Vec<Input> = {
@@ -82,7 +100,7 @@ impl Psbt {
             let mut inputs: Vec<Input> = Vec::with_capacity(inputs_len);
 
             for _ in 0..inputs_len {
-                inputs.push(Input::decode(&mut d)?);
+                inputs.push(Input::decode(r)?);
             }
 
             inputs
@@ -94,7 +112,7 @@ impl Psbt {
             let mut outputs: Vec<Output> = Vec::with_capacity(outputs_len);
 
             for _ in 0..outputs_len {
-                outputs.push(Output::decode(&mut d)?);
+                outputs.push(Output::decode(r)?);
             }
 
             outputs
@@ -173,7 +191,7 @@ impl Deserialize for ecdsa::Signature {
             ecdsa::Error::EmptySignature => Error::InvalidEcdsaSignature(e),
             ecdsa::Error::SighashType(err) => Error::NonStandardSighashType(err.0),
             ecdsa::Error::Secp256k1(..) => Error::InvalidEcdsaSignature(e),
-            ecdsa::Error::Hex(..) => unreachable!("Decoding from slice, not hex"),
+            ecdsa::Error::Hex(..) => unreachable!("decoding from slice, not hex"),
             _ => todo!("handle this properly"),
         })
     }
@@ -319,7 +337,7 @@ impl Deserialize for (ScriptBuf, LeafVersion) {
 impl Serialize for (Vec<TapLeafHash>, KeySource) {
     fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(32 * self.0.len() + key_source_len(&self.1));
-        self.0.consensus_encode(&mut buf).expect("Vecs don't error allocation");
+        self.0.consensus_encode(&mut buf).expect("vecs don't error allocation");
         buf.extend(self.1.serialize());
         buf
     }
@@ -339,7 +357,7 @@ impl Serialize for TapTree {
             .script_leaves()
             .map(|l| {
                 l.script().len() + VarInt::from(l.script().len()).size() // script version
-            + 1 // merkle branch
+            + 1 // Merkle branch
             + 1 // leaf version
             })
             .sum::<usize>();
@@ -351,7 +369,7 @@ impl Serialize for TapTree {
             // safe to cast from usize to u8
             buf.push(leaf_info.merkle_branch().len() as u8);
             buf.push(leaf_info.version().to_consensus());
-            leaf_info.script().consensus_encode(&mut buf).expect("Vecs dont err");
+            leaf_info.script().consensus_encode(&mut buf).expect("vecs dont err");
         }
         buf
     }
@@ -362,7 +380,7 @@ impl Deserialize for TapTree {
         let mut builder = TaprootBuilder::new();
         let mut bytes_iter = bytes.iter();
         while let Some(depth) = bytes_iter.next() {
-            let version = bytes_iter.next().ok_or(Error::Taproot("Invalid Taproot Builder"))?;
+            let version = bytes_iter.next().ok_or(Error::Taproot("invalid Taproot Builder"))?;
             let (script, consumed) = deserialize_partial::<ScriptBuf>(bytes_iter.as_slice())?;
             if consumed > 0 {
                 bytes_iter.nth(consumed - 1);
@@ -371,7 +389,7 @@ impl Deserialize for TapTree {
                 LeafVersion::from_consensus(*version).map_err(|_| Error::InvalidLeafVersion)?;
             builder = builder
                 .add_leaf_with_ver(*depth, script, leaf_version)
-                .map_err(|_| Error::Taproot("Tree not in DFS order"))?;
+                .map_err(|_| Error::Taproot("tree not in DFS order"))?;
         }
         TapTree::try_from(builder).map_err(Error::TapTree)
     }

@@ -73,7 +73,7 @@ pub struct Input {
     /// including P2SH embedded ones.
     pub witness_utxo: Option<TxOut>,
     /// A map from public keys to their corresponding signature as would be
-    /// pushed to the stack from a scriptSig or witness for a non-taproot inputs.
+    /// pushed to the stack from a scriptSig or witness for a non-Taproot inputs.
     pub partial_sigs: BTreeMap<PublicKey, ecdsa::Signature>,
     /// The sighash type to be used for this input. Signatures for this input
     /// must use the sighash type.
@@ -104,7 +104,7 @@ pub struct Input {
     /// HAS256 hash to preimage map.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_byte_values"))]
     pub hash256_preimages: BTreeMap<sha256d::Hash, Vec<u8>>,
-    /// Serialized taproot signature with sighash type for key spend.
+    /// Serialized Taproot signature with sighash type for key spend.
     pub tap_key_sig: Option<taproot::Signature>,
     /// Map of `<xonlypubkey>|<leafhash>` with signature.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq"))]
@@ -129,10 +129,20 @@ pub struct Input {
 
 /// A Signature hash type for the corresponding input.
 ///
-/// As of taproot upgrade, the signature hash type can be either [`EcdsaSighashType`] or
+/// As of Taproot upgrade, the signature hash type can be either [`EcdsaSighashType`] or
 /// [`TapSighashType`] but it is not possible to know directly which signature hash type the user is
 /// dealing with. Therefore, the user is responsible for converting to/from [`PsbtSighashType`]
 /// from/to the desired signature hash type they need.
+///
+/// # Examples
+///
+/// ```
+/// use bitcoin::{EcdsaSighashType, TapSighashType};
+/// use psbt_v0::PsbtSighashType;
+///
+/// let _ecdsa_sighash_all: PsbtSighashType = EcdsaSighashType::All.into();
+/// let _tap_sighash_all: PsbtSighashType = TapSighashType::All.into();
+/// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(crate = "actual_serde"))]
@@ -156,7 +166,7 @@ impl FromStr for PsbtSighashType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // We accept strings of form: "SIGHASH_ALL" etc.
         //
-        // NB: some of Taproot sighash types are non-standard for pre-taproot
+        // NB: some of Taproot sighash types are non-standard for pre-Taproot
         // inputs. We also do not support SIGHASH_RESERVED in verbatim form
         // ("0xFF" string should be used instead).
         if let Ok(ty) = TapSighashType::from_str(s) {
@@ -205,6 +215,22 @@ impl std::error::Error for ParseSighashTypeError {
 }
 
 impl PsbtSighashType {
+    /// Ambiguous `ALL` sighash type, may refer to either [`EcdsaSighashType::All`]
+    /// or [`TapSighashType::All`].
+    ///
+    /// This is equivalent to either `EcdsaSighashType::All.into()` or `TapSighashType::All.into()`.
+    /// For sighash types other than `ALL` use the ECDSA or Taproot sighash type directly.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bitcoin::{EcdsaSighashType, TapSighashType};
+    /// use bitcoin::psbt::PsbtSighashType;
+    /// let _ecdsa_sighash_anyone_can_pay: PsbtSighashType = EcdsaSighashType::AllPlusAnyoneCanPay.into();
+    /// let _tap_sighash_anyone_can_pay: PsbtSighashType = TapSighashType::AllPlusAnyoneCanPay.into();
+    /// ```
+    pub const ALL: PsbtSighashType = PsbtSighashType { inner: 0x01 };
+
     /// Returns the [`EcdsaSighashType`] if the [`PsbtSighashType`] can be
     /// converted to one.
     pub fn ecdsa_hash_ty(self) -> Result<EcdsaSighashType, NonStandardSighashTypeError> {
@@ -522,10 +548,10 @@ fn psbt_insert_hash_pair<H>(
 where
     H: bitcoin::hashes::Hash + Deserialize,
 {
-    if raw_key.key.is_empty() {
+    if raw_key.key_data.is_empty() {
         return Err(Error::InvalidKey(raw_key));
     }
-    let key_val: H = Deserialize::deserialize(&raw_key.key)?;
+    let key_val: H = Deserialize::deserialize(&raw_key.key_data)?;
     match map.entry(key_val) {
         btree_map::Entry::Vacant(empty_key) => {
             let val: Vec<u8> = Deserialize::deserialize(&raw_value)?;
@@ -559,7 +585,7 @@ mod test {
         ] {
             let sighash = PsbtSighashType::from(*ecdsa);
             let s = format!("{}", sighash);
-            let back = PsbtSighashType::from_str(&s).unwrap();
+            let back = s.parse::<PsbtSighashType>().unwrap();
             assert_eq!(back, sighash);
             assert_eq!(back.ecdsa_hash_ty().unwrap(), *ecdsa);
         }
@@ -578,7 +604,7 @@ mod test {
         ] {
             let sighash = PsbtSighashType::from(*tap);
             let s = format!("{}", sighash);
-            let back = PsbtSighashType::from_str(&s).unwrap();
+            let back = s.parse::<PsbtSighashType>().unwrap();
             assert_eq!(back, sighash);
             assert_eq!(back.taproot_hash_ty().unwrap(), *tap);
         }
@@ -589,10 +615,17 @@ mod test {
         let nonstd = 0xdddddddd;
         let sighash = PsbtSighashType { inner: nonstd };
         let s = format!("{}", sighash);
-        let back = PsbtSighashType::from_str(&s).unwrap();
+        let back = s.parse::<PsbtSighashType>().unwrap();
 
         assert_eq!(back, sighash);
         assert_eq!(back.ecdsa_hash_ty(), Err(NonStandardSighashTypeError(nonstd)));
         assert_eq!(back.taproot_hash_ty(), Err(InvalidSighashTypeError(nonstd)));
+    }
+
+    #[test]
+    fn psbt_sighash_const_all() {
+        assert_eq!(PsbtSighashType::ALL.to_u32(), 0x01);
+        assert_eq!(PsbtSighashType::ALL.ecdsa_hash_ty().unwrap(), EcdsaSighashType::All);
+        assert_eq!(PsbtSighashType::ALL.taproot_hash_ty().unwrap(), TapSighashType::All);
     }
 }

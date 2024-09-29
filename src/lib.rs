@@ -11,6 +11,7 @@
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 // Coding conventions
 #![warn(missing_docs)]
+#![doc(test(attr(warn(unused))))]
 
 #[macro_use]
 extern crate alloc;
@@ -36,7 +37,7 @@ use core::{cmp, fmt};
 #[cfg(feature = "std")]
 use std::collections::{HashMap, HashSet};
 
-use bitcoin::bip32::{self, KeySource, Xpriv, Xpub};
+use bitcoin::bip32::{self, DerivationPath, KeySource, Xpriv, Xpub};
 use bitcoin::blockdata::transaction::{self, Transaction, TxOut};
 use bitcoin::key::{PrivateKey, PublicKey, TapTweak, XOnlyPublicKey};
 use bitcoin::secp256k1::{Keypair, Message, Secp256k1, Signing, Verification};
@@ -84,11 +85,11 @@ impl Psbt {
     /// For each PSBT input that contains UTXO information `Ok` is returned containing that information.
     /// The order of returned items is same as the order of inputs.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// The function returns error when UTXO information is not present or is invalid.
     ///
-    /// ## Panics
+    /// # Panics
     ///
     /// The function panics if the length of transaction inputs is not equal to the length of PSBT inputs.
     pub fn iter_funding_utxos(&self) -> impl Iterator<Item = Result<&TxOut, Error>> {
@@ -157,7 +158,7 @@ impl Psbt {
 
     /// Extracts the [`Transaction`] from a [`Psbt`] by filling in the available signature information.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// [`ExtractTxError`] variants will contain either the [`Psbt`] itself or the [`Transaction`]
     /// that was extracted. These can be extracted from the Errors in order to recover.
@@ -168,7 +169,7 @@ impl Psbt {
 
     /// Extracts the [`Transaction`] from a [`Psbt`] by filling in the available signature information.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// See [`extract_tx`].
     ///
@@ -382,9 +383,9 @@ impl Psbt {
         let mut used = vec![]; // List of pubkeys used to sign the input.
 
         for (pk, key_source) in input.bip32_derivation.iter() {
-            let sk = if let Ok(Some(sk)) = k.get_key(KeyRequest::Bip32(key_source.clone()), secp) {
+            let sk = if let Ok(Some(sk)) = k.get_key(&KeyRequest::Bip32(key_source.clone()), secp) {
                 sk
-            } else if let Ok(Some(sk)) = k.get_key(KeyRequest::Pubkey(PublicKey::new(*pk)), secp) {
+            } else if let Ok(Some(sk)) = k.get_key(&KeyRequest::Pubkey(PublicKey::new(*pk)), secp) {
                 sk
             } else {
                 continue;
@@ -436,7 +437,7 @@ impl Psbt {
 
         for (&xonly, (leaf_hashes, key_source)) in input.tap_key_origins.iter() {
             let sk = if let Ok(Some(secret_key)) =
-                k.get_key(KeyRequest::Bip32(key_source.clone()), secp)
+                k.get_key(&KeyRequest::Bip32(key_source.clone()), secp)
             {
                 secret_key
             } else {
@@ -562,7 +563,7 @@ impl Psbt {
                 Ok((Message::from(sighash), hash_ty))
             }
             Tr => {
-                // This PSBT signing API is WIP, taproot to come shortly.
+                // This PSBT signing API is WIP, Taproot to come shortly.
                 Err(SignError::Unsupported)
             }
         }
@@ -720,7 +721,7 @@ impl Psbt {
     /// 'Fee' being the amount that will be paid for mining a transaction with the current inputs
     /// and outputs i.e., the difference in value of the total inputs and the total outputs.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// - [`Error::MissingUtxo`] when UTXO information for any input is not present or is invalid.
     /// - [`Error::NegativeFee`] if calculated value is negative.
@@ -761,7 +762,7 @@ pub trait GetKey {
     /// - `Err` if an error was encountered while looking for the key.
     fn get_key<C: Signing>(
         &self,
-        key_request: KeyRequest,
+        key_request: &KeyRequest,
         secp: &Secp256k1<C>,
     ) -> Result<Option<PrivateKey>, Self::Error>;
 }
@@ -771,13 +772,20 @@ impl GetKey for Xpriv {
 
     fn get_key<C: Signing>(
         &self,
-        key_request: KeyRequest,
+        key_request: &KeyRequest,
         secp: &Secp256k1<C>,
     ) -> Result<Option<PrivateKey>, Self::Error> {
         match key_request {
             KeyRequest::Pubkey(_) => Err(GetKeyError::NotSupported),
             KeyRequest::Bip32((fingerprint, path)) => {
-                let key = if self.fingerprint(secp) == fingerprint {
+                let key = if self.fingerprint(secp) == *fingerprint {
+                    let k = self.derive_priv(secp, &path)?;
+                    Some(k.to_priv())
+                } else if self.parent_fingerprint == *fingerprint
+                    && !path.is_empty()
+                    && path[0] == self.child_number
+                {
+                    let path = DerivationPath::from_iter(path.into_iter().skip(1).copied());
                     let k = self.derive_priv(secp, &path)?;
                     Some(k.to_priv())
                 } else {
@@ -816,21 +824,14 @@ impl GetKey for $set<Xpriv> {
 
     fn get_key<C: Signing>(
         &self,
-        key_request: KeyRequest,
+        key_request: &KeyRequest,
         secp: &Secp256k1<C>
     ) -> Result<Option<PrivateKey>, Self::Error> {
-        match key_request {
-            KeyRequest::Pubkey(_) => Err(GetKeyError::NotSupported),
-            KeyRequest::Bip32((fingerprint, path)) => {
-                for xpriv in self.iter() {
-                    if xpriv.parent_fingerprint == fingerprint {
-                        let k = xpriv.derive_priv(secp, &path)?;
-                        return Ok(Some(k.to_priv()));
-                    }
-                }
-                Ok(None)
-            }
-        }
+        // OK to stop at the first error because Xpriv::get_key() can only fail
+        // if this isn't a KeyRequest::Bip32, which would fail for all Xprivs.
+        self.iter()
+            .find_map(|xpriv| xpriv.get_key(key_request, secp).transpose())
+            .transpose()
     }
 }}}
 impl_get_key_for_set!(BTreeSet);
@@ -846,7 +847,7 @@ impl GetKey for $map<PublicKey, PrivateKey> {
 
     fn get_key<C: Signing>(
         &self,
-        key_request: KeyRequest,
+        key_request: &KeyRequest,
         _: &Secp256k1<C>,
     ) -> Result<Option<PrivateKey>, Self::Error> {
         match key_request {
@@ -915,7 +916,7 @@ pub enum OutputType {
     ShWsh,
     /// A pay-to-script-hash output excluding wrapped segwit (P2SH).
     Sh,
-    /// A taproot output (P2TR).
+    /// A Taproot output (P2TR).
     Tr,
 }
 
@@ -970,7 +971,7 @@ pub enum SignError {
     SegwitV0Sighash(transaction::InputsIndexError),
     /// Sighash computation error (p2wpkh input).
     P2wpkhSighash(sighash::P2wpkhError),
-    /// Sighash computation error (taproot input).
+    /// Sighash computation error (Taproot input).
     TaprootError(sighash::TaprootError),
     /// Unable to determine the output type.
     UnknownOutputType,
@@ -1000,7 +1001,7 @@ impl fmt::Display for SignError {
             NotWpkh => write!(f, "the scriptPubkey is not a P2WPKH script"),
             SegwitV0Sighash(ref e) => write_err!(f, "segwit v0 sighash"; e),
             P2wpkhSighash(ref e) => write_err!(f, "p2wpkh sighash"; e),
-            TaprootError(ref e) => write_err!(f, "taproot sighash"; e),
+            TaprootError(ref e) => write_err!(f, "Taproot sighash"; e),
             UnknownOutputType => write!(f, "unable to determine the output type"),
             KeyNotFound => write!(f, "unable to find key"),
             WrongSigningAlgorithm =>
@@ -1079,14 +1080,14 @@ impl fmt::Display for ExtractTxError {
 
         match *self {
             AbsurdFeeRate { fee_rate, .. } =>
-                write!(f, "An absurdly high fee rate of {}", fee_rate),
+                write!(f, "an absurdly high fee rate of {}", fee_rate),
             MissingInputValue { .. } => write!(
                 f,
-                "One of the inputs lacked value information (witness_utxo or non_witness_utxo)"
+                "one of the inputs lacked value information (witness_utxo or non_witness_utxo)"
             ),
             SendingTooMuch { .. } => write!(
                 f,
-                "Transaction would be invalid due to output value being greater than input value."
+                "transaction would be invalid due to output value being greater than input value."
             ),
         }
     }
@@ -1471,7 +1472,7 @@ mod tests {
     #[test]
     fn serialize_then_deserialize_psbtkvpair() {
         let expected = raw::Pair {
-            key: raw::Key { type_value: 0u8, key: vec![42u8, 69u8] },
+            key: raw::Key { type_value: 0u8, key_data: vec![42u8, 69u8] },
             value: vec![69u8, 42u8, 4u8],
         };
 
@@ -1522,7 +1523,7 @@ mod tests {
             }],
         };
         let unknown: BTreeMap<raw::Key, Vec<u8>> =
-            vec![(raw::Key { type_value: 1, key: vec![0, 1] }, vec![3, 4, 5])]
+            vec![(raw::Key { type_value: 1, key_data: vec![0, 1] }, vec![3, 4, 5])]
                 .into_iter()
                 .collect();
         let key_source = ("deadbeef".parse().unwrap(), "0'/1".parse().unwrap());
@@ -1601,9 +1602,6 @@ mod tests {
     }
 
     mod bip_vectors {
-        #[cfg(feature = "base64")]
-        use std::str::FromStr;
-
         use super::*;
         use crate::map::Map;
 
@@ -1617,7 +1615,7 @@ mod tests {
         #[test]
         #[should_panic(expected = "InvalidMagic")]
         fn invalid_vector_1_base64() {
-            Psbt::from_str("AgAAAAEmgXE3Ht/yhek3re6ks3t4AAwFZsuzrWRkFxPKQhcb9gAAAABqRzBEAiBwsiRRI+a/R01gxbUMBD1MaRpdJDXwmjSnZiqdwlF5CgIgATKcqdrPKAvfMHQOwDkEIkIsgctFg5RXrrdvwS7dlbMBIQJlfRGNM1e44PTCzUbbezn22cONmnCry5st5dyNv+TOMf7///8C09/1BQAAAAAZdqkU0MWZA8W6woaHYOkP1SGkZlqnZSCIrADh9QUAAAAAF6kUNUXm4zuDLEcFDyTT7rk8nAOUi8eHsy4TAA==").unwrap();
+            "AgAAAAEmgXE3Ht/yhek3re6ks3t4AAwFZsuzrWRkFxPKQhcb9gAAAABqRzBEAiBwsiRRI+a/R01gxbUMBD1MaRpdJDXwmjSnZiqdwlF5CgIgATKcqdrPKAvfMHQOwDkEIkIsgctFg5RXrrdvwS7dlbMBIQJlfRGNM1e44PTCzUbbezn22cONmnCry5st5dyNv+TOMf7///8C09/1BQAAAAAZdqkU0MWZA8W6woaHYOkP1SGkZlqnZSCIrADh9QUAAAAAF6kUNUXm4zuDLEcFDyTT7rk8nAOUi8eHsy4TAA==".parse::<Psbt>().unwrap();
         }
 
         #[test]
@@ -1631,8 +1629,7 @@ mod tests {
         #[test]
         #[should_panic(expected = "ConsensusEncoding")]
         fn invalid_vector_2_base64() {
-            Psbt::from_str("cHNidP8BAHUCAAAAASaBcTce3/KF6Tet7qSze3gADAVmy7OtZGQXE8pCFxv2AAAAAAD+////AtPf9QUAAAAAGXapFNDFmQPFusKGh2DpD9UhpGZap2UgiKwA4fUFAAAAABepFDVF5uM7gyxHBQ8k0+65PJwDlIvHh7MuEwAAAQD9pQEBAAAAAAECiaPHHqtNIOA3G7ukzGmPopXJRjr6Ljl/hTPMti+VZ+UBAAAAFxYAFL4Y0VKpsBIDna89p95PUzSe7LmF/////4b4qkOnHf8USIk6UwpyN+9rRgi7st0tAXHmOuxqSJC0AQAAABcWABT+Pp7xp0XpdNkCxDVZQ6vLNL1TU/////8CAMLrCwAAAAAZdqkUhc/xCX/Z4Ai7NK9wnGIZeziXikiIrHL++E4sAAAAF6kUM5cluiHv1irHU6m80GfWx6ajnQWHAkcwRAIgJxK+IuAnDzlPVoMR3HyppolwuAJf3TskAinwf4pfOiQCIAGLONfc0xTnNMkna9b7QPZzMlvEuqFEyADS8vAtsnZcASED0uFWdJQbrUqZY3LLh+GFbTZSYG2YVi/jnF6efkE/IQUCSDBFAiEA0SuFLYXc2WHS9fSrZgZU327tzHlMDDPOXMMJ/7X85Y0CIGczio4OFyXBl/saiK9Z9R5E5CVbIBZ8hoQDHAXR8lkqASECI7cr7vCWXRC+B3jv7NYfysb3mk6haTkzgHNEZPhPKrMAAAAAAA==")
-                .unwrap();
+            "cHNidP8BAHUCAAAAASaBcTce3/KF6Tet7qSze3gADAVmy7OtZGQXE8pCFxv2AAAAAAD+////AtPf9QUAAAAAGXapFNDFmQPFusKGh2DpD9UhpGZap2UgiKwA4fUFAAAAABepFDVF5uM7gyxHBQ8k0+65PJwDlIvHh7MuEwAAAQD9pQEBAAAAAAECiaPHHqtNIOA3G7ukzGmPopXJRjr6Ljl/hTPMti+VZ+UBAAAAFxYAFL4Y0VKpsBIDna89p95PUzSe7LmF/////4b4qkOnHf8USIk6UwpyN+9rRgi7st0tAXHmOuxqSJC0AQAAABcWABT+Pp7xp0XpdNkCxDVZQ6vLNL1TU/////8CAMLrCwAAAAAZdqkUhc/xCX/Z4Ai7NK9wnGIZeziXikiIrHL++E4sAAAAF6kUM5cluiHv1irHU6m80GfWx6ajnQWHAkcwRAIgJxK+IuAnDzlPVoMR3HyppolwuAJf3TskAinwf4pfOiQCIAGLONfc0xTnNMkna9b7QPZzMlvEuqFEyADS8vAtsnZcASED0uFWdJQbrUqZY3LLh+GFbTZSYG2YVi/jnF6efkE/IQUCSDBFAiEA0SuFLYXc2WHS9fSrZgZU327tzHlMDDPOXMMJ/7X85Y0CIGczio4OFyXBl/saiK9Z9R5E5CVbIBZ8hoQDHAXR8lkqASECI7cr7vCWXRC+B3jv7NYfysb3mk6haTkzgHNEZPhPKrMAAAAAAA==".parse::<Psbt>().unwrap();
         }
 
         #[test]
@@ -1645,7 +1642,7 @@ mod tests {
         #[test]
         #[should_panic(expected = "UnsignedTxHasScriptSigs")]
         fn invalid_vector_3_base64() {
-            Psbt::from_str("cHNidP8BAP0KAQIAAAACqwlJoIxa98SbghL0F+LxWrP1wz3PFTghqBOfh3pbe+QAAAAAakcwRAIgR1lmF5fAGwNrJZKJSGhiGDR9iYZLcZ4ff89X0eURZYcCIFMJ6r9Wqk2Ikf/REf3xM286KdqGbX+EhtdVRs7tr5MZASEDXNxh/HupccC1AaZGoqg7ECy0OIEhfKaC3Ibi1z+ogpL+////qwlJoIxa98SbghL0F+LxWrP1wz3PFTghqBOfh3pbe+QBAAAAAP7///8CYDvqCwAAAAAZdqkUdopAu9dAy+gdmI5x3ipNXHE5ax2IrI4kAAAAAAAAGXapFG9GILVT+glechue4O/p+gOcykWXiKwAAAAAAAABASAA4fUFAAAAABepFDVF5uM7gyxHBQ8k0+65PJwDlIvHhwEEFgAUhdE1N/LiZUBaNNuvqePdoB+4IwgAAAA=").unwrap();
+            "cHNidP8BAP0KAQIAAAACqwlJoIxa98SbghL0F+LxWrP1wz3PFTghqBOfh3pbe+QAAAAAakcwRAIgR1lmF5fAGwNrJZKJSGhiGDR9iYZLcZ4ff89X0eURZYcCIFMJ6r9Wqk2Ikf/REf3xM286KdqGbX+EhtdVRs7tr5MZASEDXNxh/HupccC1AaZGoqg7ECy0OIEhfKaC3Ibi1z+ogpL+////qwlJoIxa98SbghL0F+LxWrP1wz3PFTghqBOfh3pbe+QBAAAAAP7///8CYDvqCwAAAAAZdqkUdopAu9dAy+gdmI5x3ipNXHE5ax2IrI4kAAAAAAAAGXapFG9GILVT+glechue4O/p+gOcykWXiKwAAAAAAAABASAA4fUFAAAAABepFDVF5uM7gyxHBQ8k0+65PJwDlIvHhwEEFgAUhdE1N/LiZUBaNNuvqePdoB+4IwgAAAA=".parse::<Psbt>().unwrap();
         }
 
         #[test]
@@ -1658,20 +1655,20 @@ mod tests {
         #[test]
         #[should_panic(expected = "MustHaveUnsignedTx")]
         fn invalid_vector_4_base64() {
-            Psbt::from_str("cHNidP8AAQD9pQEBAAAAAAECiaPHHqtNIOA3G7ukzGmPopXJRjr6Ljl/hTPMti+VZ+UBAAAAFxYAFL4Y0VKpsBIDna89p95PUzSe7LmF/////4b4qkOnHf8USIk6UwpyN+9rRgi7st0tAXHmOuxqSJC0AQAAABcWABT+Pp7xp0XpdNkCxDVZQ6vLNL1TU/////8CAMLrCwAAAAAZdqkUhc/xCX/Z4Ai7NK9wnGIZeziXikiIrHL++E4sAAAAF6kUM5cluiHv1irHU6m80GfWx6ajnQWHAkcwRAIgJxK+IuAnDzlPVoMR3HyppolwuAJf3TskAinwf4pfOiQCIAGLONfc0xTnNMkna9b7QPZzMlvEuqFEyADS8vAtsnZcASED0uFWdJQbrUqZY3LLh+GFbTZSYG2YVi/jnF6efkE/IQUCSDBFAiEA0SuFLYXc2WHS9fSrZgZU327tzHlMDDPOXMMJ/7X85Y0CIGczio4OFyXBl/saiK9Z9R5E5CVbIBZ8hoQDHAXR8lkqASECI7cr7vCWXRC+B3jv7NYfysb3mk6haTkzgHNEZPhPKrMAAAAAAA==").unwrap();
+            "cHNidP8AAQD9pQEBAAAAAAECiaPHHqtNIOA3G7ukzGmPopXJRjr6Ljl/hTPMti+VZ+UBAAAAFxYAFL4Y0VKpsBIDna89p95PUzSe7LmF/////4b4qkOnHf8USIk6UwpyN+9rRgi7st0tAXHmOuxqSJC0AQAAABcWABT+Pp7xp0XpdNkCxDVZQ6vLNL1TU/////8CAMLrCwAAAAAZdqkUhc/xCX/Z4Ai7NK9wnGIZeziXikiIrHL++E4sAAAAF6kUM5cluiHv1irHU6m80GfWx6ajnQWHAkcwRAIgJxK+IuAnDzlPVoMR3HyppolwuAJf3TskAinwf4pfOiQCIAGLONfc0xTnNMkna9b7QPZzMlvEuqFEyADS8vAtsnZcASED0uFWdJQbrUqZY3LLh+GFbTZSYG2YVi/jnF6efkE/IQUCSDBFAiEA0SuFLYXc2WHS9fSrZgZU327tzHlMDDPOXMMJ/7X85Y0CIGczio4OFyXBl/saiK9Z9R5E5CVbIBZ8hoQDHAXR8lkqASECI7cr7vCWXRC+B3jv7NYfysb3mk6haTkzgHNEZPhPKrMAAAAAAA==".parse::<Psbt>().unwrap();
         }
 
         #[test]
-        #[should_panic(expected = "DuplicateKey(Key { type_value: 0, key: [] })")]
+        #[should_panic(expected = "DuplicateKey(Key { type_value: 0, key_data: [] })")]
         fn invalid_vector_5() {
             hex_psbt("70736274ff0100750200000001268171371edff285e937adeea4b37b78000c0566cbb3ad64641713ca42171bf60000000000feffffff02d3dff505000000001976a914d0c59903c5bac2868760e90fd521a4665aa7652088ac00e1f5050000000017a9143545e6e33b832c47050f24d3eeb93c9c03948bc787b32e1300000100fda5010100000000010289a3c71eab4d20e0371bbba4cc698fa295c9463afa2e397f8533ccb62f9567e50100000017160014be18d152a9b012039daf3da7de4f53349eecb985ffffffff86f8aa43a71dff1448893a530a7237ef6b4608bbb2dd2d0171e63aec6a4890b40100000017160014fe3e9ef1a745e974d902c4355943abcb34bd5353ffffffff0200c2eb0b000000001976a91485cff1097fd9e008bb34af709c62197b38978a4888ac72fef84e2c00000017a914339725ba21efd62ac753a9bcd067d6c7a6a39d05870247304402202712be22e0270f394f568311dc7ca9a68970b8025fdd3b240229f07f8a5f3a240220018b38d7dcd314e734c9276bd6fb40f673325bc4baa144c800d2f2f02db2765c012103d2e15674941bad4a996372cb87e1856d3652606d98562fe39c5e9e7e413f210502483045022100d12b852d85dcd961d2f5f4ab660654df6eedcc794c0c33ce5cc309ffb5fce58d022067338a8e0e1725c197fb1a88af59f51e44e4255b20167c8684031c05d1f2592a01210223b72beef0965d10be0778efecd61fcac6f79a4ea169393380734464f84f2ab30000000001003f0200000001ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0000000000ffffffff010000000000000000036a010000000000000000").unwrap();
         }
 
         #[cfg(feature = "base64")]
         #[test]
-        #[should_panic(expected = "DuplicateKey(Key { type_value: 0, key: [] })")]
+        #[should_panic(expected = "DuplicateKey(Key { type_value: 0, key_data: [] })")]
         fn invalid_vector_5_base64() {
-            Psbt::from_str("cHNidP8BAHUCAAAAASaBcTce3/KF6Tet7qSze3gADAVmy7OtZGQXE8pCFxv2AAAAAAD+////AtPf9QUAAAAAGXapFNDFmQPFusKGh2DpD9UhpGZap2UgiKwA4fUFAAAAABepFDVF5uM7gyxHBQ8k0+65PJwDlIvHh7MuEwAAAQD9pQEBAAAAAAECiaPHHqtNIOA3G7ukzGmPopXJRjr6Ljl/hTPMti+VZ+UBAAAAFxYAFL4Y0VKpsBIDna89p95PUzSe7LmF/////4b4qkOnHf8USIk6UwpyN+9rRgi7st0tAXHmOuxqSJC0AQAAABcWABT+Pp7xp0XpdNkCxDVZQ6vLNL1TU/////8CAMLrCwAAAAAZdqkUhc/xCX/Z4Ai7NK9wnGIZeziXikiIrHL++E4sAAAAF6kUM5cluiHv1irHU6m80GfWx6ajnQWHAkcwRAIgJxK+IuAnDzlPVoMR3HyppolwuAJf3TskAinwf4pfOiQCIAGLONfc0xTnNMkna9b7QPZzMlvEuqFEyADS8vAtsnZcASED0uFWdJQbrUqZY3LLh+GFbTZSYG2YVi/jnF6efkE/IQUCSDBFAiEA0SuFLYXc2WHS9fSrZgZU327tzHlMDDPOXMMJ/7X85Y0CIGczio4OFyXBl/saiK9Z9R5E5CVbIBZ8hoQDHAXR8lkqASECI7cr7vCWXRC+B3jv7NYfysb3mk6haTkzgHNEZPhPKrMAAAAAAQA/AgAAAAH//////////////////////////////////////////wAAAAAA/////wEAAAAAAAAAAANqAQAAAAAAAAAA").unwrap();
+            "cHNidP8BAHUCAAAAASaBcTce3/KF6Tet7qSze3gADAVmy7OtZGQXE8pCFxv2AAAAAAD+////AtPf9QUAAAAAGXapFNDFmQPFusKGh2DpD9UhpGZap2UgiKwA4fUFAAAAABepFDVF5uM7gyxHBQ8k0+65PJwDlIvHh7MuEwAAAQD9pQEBAAAAAAECiaPHHqtNIOA3G7ukzGmPopXJRjr6Ljl/hTPMti+VZ+UBAAAAFxYAFL4Y0VKpsBIDna89p95PUzSe7LmF/////4b4qkOnHf8USIk6UwpyN+9rRgi7st0tAXHmOuxqSJC0AQAAABcWABT+Pp7xp0XpdNkCxDVZQ6vLNL1TU/////8CAMLrCwAAAAAZdqkUhc/xCX/Z4Ai7NK9wnGIZeziXikiIrHL++E4sAAAAF6kUM5cluiHv1irHU6m80GfWx6ajnQWHAkcwRAIgJxK+IuAnDzlPVoMR3HyppolwuAJf3TskAinwf4pfOiQCIAGLONfc0xTnNMkna9b7QPZzMlvEuqFEyADS8vAtsnZcASED0uFWdJQbrUqZY3LLh+GFbTZSYG2YVi/jnF6efkE/IQUCSDBFAiEA0SuFLYXc2WHS9fSrZgZU327tzHlMDDPOXMMJ/7X85Y0CIGczio4OFyXBl/saiK9Z9R5E5CVbIBZ8hoQDHAXR8lkqASECI7cr7vCWXRC+B3jv7NYfysb3mk6haTkzgHNEZPhPKrMAAAAAAQA/AgAAAAH//////////////////////////////////////////wAAAAAA/////wEAAAAAAAAAAANqAQAAAAAAAAAA".parse::<Psbt>().unwrap();
         }
 
         #[test]
@@ -1770,9 +1767,9 @@ mod tests {
             #[cfg(feature = "base64")]
             {
                 let base64str = "cHNidP8BAHUCAAAAASaBcTce3/KF6Tet7qSze3gADAVmy7OtZGQXE8pCFxv2AAAAAAD+////AtPf9QUAAAAAGXapFNDFmQPFusKGh2DpD9UhpGZap2UgiKwA4fUFAAAAABepFDVF5uM7gyxHBQ8k0+65PJwDlIvHh7MuEwAAAQD9pQEBAAAAAAECiaPHHqtNIOA3G7ukzGmPopXJRjr6Ljl/hTPMti+VZ+UBAAAAFxYAFL4Y0VKpsBIDna89p95PUzSe7LmF/////4b4qkOnHf8USIk6UwpyN+9rRgi7st0tAXHmOuxqSJC0AQAAABcWABT+Pp7xp0XpdNkCxDVZQ6vLNL1TU/////8CAMLrCwAAAAAZdqkUhc/xCX/Z4Ai7NK9wnGIZeziXikiIrHL++E4sAAAAF6kUM5cluiHv1irHU6m80GfWx6ajnQWHAkcwRAIgJxK+IuAnDzlPVoMR3HyppolwuAJf3TskAinwf4pfOiQCIAGLONfc0xTnNMkna9b7QPZzMlvEuqFEyADS8vAtsnZcASED0uFWdJQbrUqZY3LLh+GFbTZSYG2YVi/jnF6efkE/IQUCSDBFAiEA0SuFLYXc2WHS9fSrZgZU327tzHlMDDPOXMMJ/7X85Y0CIGczio4OFyXBl/saiK9Z9R5E5CVbIBZ8hoQDHAXR8lkqASECI7cr7vCWXRC+B3jv7NYfysb3mk6haTkzgHNEZPhPKrMAAAAAAAAA";
-                assert_eq!(Psbt::from_str(base64str).unwrap(), unserialized);
+                assert_eq!(base64str.parse::<Psbt>().unwrap(), unserialized);
                 assert_eq!(base64str, unserialized.to_string());
-                assert_eq!(Psbt::from_str(base64str).unwrap(), hex_psbt(base16str).unwrap());
+                assert_eq!(base64str.parse::<Psbt>().unwrap(), hex_psbt(base16str).unwrap());
             }
         }
 
@@ -1883,7 +1880,8 @@ mod tests {
             );
 
             let mut unknown: BTreeMap<raw::Key, Vec<u8>> = BTreeMap::new();
-            let key: raw::Key = raw::Key { type_value: 0x0fu8, key: hex!("010203040506070809") };
+            let key: raw::Key =
+                raw::Key { type_value: 0x0fu8, key_data: hex!("010203040506070809") };
             let value: Vec<u8> = hex!("0102030405060708090a0b0c0d0e0f");
 
             unknown.insert(key, value);
@@ -1901,11 +1899,11 @@ mod tests {
             assert_eq!(err.to_string(), "invalid xonly public key");
             let err = hex_psbt("70736274ff010071020000000127744ababf3027fe0d6cf23a96eee2efb188ef52301954585883e69b6624b2420000000000ffffffff02787c01000000000016001483a7e34bd99ff03a4962ef8a1a101bb295461ece606b042a010000001600147ac369df1b20e033d6116623957b0ac49f3c52e8000000000001012b00f2052a010000002251205a2c2cf5b52cf31f83ad2e8da63ff03183ecd8f609c7510ae8a48e03910a0757011342173bb3d36c074afb716fec6307a069a2e450b995f3c82785945ab8df0e24260dcd703b0cbf34de399184a9481ac2b3586db6601f026a77f7e4938481bc34751701aa000000").unwrap_err();
             #[cfg(feature = "std")]
-            assert_eq!(err.to_string(), "invalid taproot signature");
+            assert_eq!(err.to_string(), "invalid Taproot signature");
             #[cfg(not(feature = "std"))]
             assert_eq!(
                 err.to_string(),
-                "invalid taproot signature: invalid taproot signature size: 66"
+                "invalid Taproot signature: invalid taproot signature size: 66"
             );
             let err = hex_psbt("70736274ff010071020000000127744ababf3027fe0d6cf23a96eee2efb188ef52301954585883e69b6624b2420000000000ffffffff02787c01000000000016001483a7e34bd99ff03a4962ef8a1a101bb295461ece606b042a010000001600147ac369df1b20e033d6116623957b0ac49f3c52e8000000000001012b00f2052a010000002251205a2c2cf5b52cf31f83ad2e8da63ff03183ecd8f609c7510ae8a48e03910a0757221602fe349064c98d6e2a853fa3c9b12bd8b304a19c195c60efa7ee2393046d3fa2321900772b2da75600008001000080000000800100000000000000000000").unwrap_err();
             assert_eq!(err.to_string(), "invalid xonly public key");
@@ -1923,19 +1921,19 @@ mod tests {
             );
             let err = hex_psbt("70736274ff01005e02000000019bd48765230bf9a72e662001f972556e54f0c6f97feb56bcb5600d817f6995260100000000ffffffff0148e6052a01000000225120030da4fce4f7db28c2cb2951631e003713856597fe963882cb500e68112cca63000000000001012b00f2052a01000000225120c2247efbfd92ac47f6f40b8d42d169175a19fa9fa10e4a25d7f35eb4dd85b69241142cb13ac68248de806aa6a3659cf3c03eb6821d09c8114a4e868febde865bb6d2cd970e15f53fc0c82f950fd560ffa919b76172be017368a89913af074f400b094289756aa3739ccc689ec0fcf3a360be32cc0b59b16e93a1e8bb4605726b2ca7a3ff706c4176649632b2cc68e1f912b8a578e3719ce7710885c7a966f49bcd43cb01010000").unwrap_err();
             #[cfg(feature = "std")]
-            assert_eq!(err.to_string(), "invalid taproot signature");
+            assert_eq!(err.to_string(), "invalid Taproot signature");
             #[cfg(not(feature = "std"))]
             assert_eq!(
                 err.to_string(),
-                "invalid taproot signature: invalid taproot signature size: 66"
+                "invalid Taproot signature: invalid taproot signature size: 66"
             );
             let err = hex_psbt("70736274ff01005e02000000019bd48765230bf9a72e662001f972556e54f0c6f97feb56bcb5600d817f6995260100000000ffffffff0148e6052a01000000225120030da4fce4f7db28c2cb2951631e003713856597fe963882cb500e68112cca63000000000001012b00f2052a01000000225120c2247efbfd92ac47f6f40b8d42d169175a19fa9fa10e4a25d7f35eb4dd85b69241142cb13ac68248de806aa6a3659cf3c03eb6821d09c8114a4e868febde865bb6d2cd970e15f53fc0c82f950fd560ffa919b76172be017368a89913af074f400b093989756aa3739ccc689ec0fcf3a360be32cc0b59b16e93a1e8bb4605726b2ca7a3ff706c4176649632b2cc68e1f912b8a578e3719ce7710885c7a966f49bcd43cb0000").unwrap_err();
             #[cfg(feature = "std")]
-            assert_eq!(err.to_string(), "invalid taproot signature");
+            assert_eq!(err.to_string(), "invalid Taproot signature");
             #[cfg(not(feature = "std"))]
             assert_eq!(
                 err.to_string(),
-                "invalid taproot signature: invalid taproot signature size: 57"
+                "invalid Taproot signature: invalid taproot signature size: 57"
             );
             let err = hex_psbt("70736274ff01005e02000000019bd48765230bf9a72e662001f972556e54f0c6f97feb56bcb5600d817f6995260100000000ffffffff0148e6052a01000000225120030da4fce4f7db28c2cb2951631e003713856597fe963882cb500e68112cca63000000000001012b00f2052a01000000225120c2247efbfd92ac47f6f40b8d42d169175a19fa9fa10e4a25d7f35eb4dd85b6926315c150929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac06f7d62059e9497a1a4a267569d9876da60101aff38e3529b9b939ce7f91ae970115f2e490af7cc45c4f78511f36057ce5c5a5c56325a29fb44dfc203f356e1f80023202cb13ac68248de806aa6a3659cf3c03eb6821d09c8114a4e868febde865bb6d2acc00000").unwrap_err();
             assert_eq!(err.to_string(), "invalid control block");
@@ -2167,7 +2165,7 @@ mod tests {
         let mut key_map = BTreeMap::new();
         key_map.insert(pk, priv_key);
 
-        let got = key_map.get_key(KeyRequest::Pubkey(pk), &secp).expect("failed to get key");
+        let got = key_map.get_key(&KeyRequest::Pubkey(pk), &secp).expect("failed to get key");
         assert_eq!(got.unwrap(), priv_key)
     }
 
@@ -2285,7 +2283,7 @@ mod tests {
     fn sign_psbt() {
         use bitcoin::bip32::{DerivationPath, Fingerprint};
         use bitcoin::witness_version::WitnessVersion;
-        use bitcoin::{WPubkeyHash, WitnessProgram};
+        use bitcoin::WitnessProgram;
 
         let unsigned_tx = Transaction {
             version: transaction::Version::TWO,
@@ -2305,7 +2303,7 @@ mod tests {
         // First input we can spend. See comment above on key_map for why we use defaults here.
         let txout_wpkh = TxOut {
             value: Amount::from_sat(10),
-            script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::hash(&pk.to_bytes())),
+            script_pubkey: ScriptBuf::new_p2wpkh(&pk.wpubkey_hash().unwrap()),
         };
         psbt.inputs[0].witness_utxo = Some(txout_wpkh);
 

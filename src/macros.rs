@@ -84,7 +84,7 @@ macro_rules! impl_psbtmap_ser_de_serialize {
 #[rustfmt::skip]
 macro_rules! impl_psbt_insert_pair {
     ($slf:ident.$unkeyed_name:ident <= <$raw_key:ident: _>|<$raw_value:ident: $unkeyed_value_type:ty>) => {
-        if $raw_key.key.is_empty() {
+        if $raw_key.key_data.is_empty() {
             if $slf.$unkeyed_name.is_none() {
                 let val: $unkeyed_value_type = $crate::serialize::Deserialize::deserialize(&$raw_value)?;
                 $slf.$unkeyed_name = Some(val)
@@ -96,8 +96,8 @@ macro_rules! impl_psbt_insert_pair {
         }
     };
     ($slf:ident.$keyed_name:ident <= <$raw_key:ident: $keyed_key_type:ty>|<$raw_value:ident: $keyed_value_type:ty>) => {
-        if !$raw_key.key.is_empty() {
-            let key_val: $keyed_key_type = $crate::serialize::Deserialize::deserialize(&$raw_key.key)?;
+        if !$raw_key.key_data.is_empty() {
+            let key_val: $keyed_key_type = $crate::serialize::Deserialize::deserialize(&$raw_key.key_data)?;
             match $slf.$keyed_name.entry(key_val) {
                 $crate::prelude::btree_map::Entry::Vacant(empty_key) => {
                     let val: $keyed_value_type = $crate::serialize::Deserialize::deserialize(&$raw_value)?;
@@ -118,7 +118,7 @@ macro_rules! impl_psbt_get_pair {
             $rv.push($crate::raw::Pair {
                 key: $crate::raw::Key {
                     type_value: $unkeyed_typeval,
-                    key: vec![],
+                    key_data: vec![],
                 },
                 value: $crate::serialize::Serialize::serialize($unkeyed_name),
             });
@@ -129,7 +129,7 @@ macro_rules! impl_psbt_get_pair {
             $rv.push($crate::raw::Pair {
                 key: $crate::raw::Key {
                     type_value: $keyed_typeval,
-                    key: $crate::serialize::Serialize::serialize(key),
+                    key_data: $crate::serialize::Serialize::serialize(key),
                 },
                 value: $crate::serialize::Serialize::serialize(val),
             });
